@@ -14,6 +14,17 @@
 #include <string.h>
 #include <sys/mman.h>
 
+static void *new_page_memory(size_t size) {
+  void *page = mmap(NULL, size, PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (page == MAP_FAILED) {
+    perror("mmap failed");
+    exit(1);
+  }
+  memset(page, 0xAA, size);
+  return page;
+}
+
 typedef struct Allocator Allocator;
 
 // won't live on stack or heap but on a secret third thing
@@ -129,15 +140,7 @@ static void *arena_alloc(Allocator *self, size_t size) {
     current = current->next;
   }
 
-  // create new page
-  ArenaAllocator *new_arena = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
-                                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  if (new_arena == MAP_FAILED) {
-    perror("mmap failed");
-    exit(1);
-  }
-
-  memset(new_arena, 0xAA, 4096);
+  ArenaAllocator *new_arena = new_page_memory(4096);
   new_arena->base = arena->base;
   size_t arena_size = (sizeof(ArenaAllocator) + 7) & ~7;
   new_arena->offset = (void *)new_arena + arena_size;
@@ -184,14 +187,7 @@ AllocatorVTable arena_vtable = {
     .alloc = arena_alloc, .free = arena_free, .resize = arena_resize};
 
 Allocator *create_arena_allocator() {
-  ArenaAllocator *arena = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
-                               MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  if (arena == MAP_FAILED) {
-    perror("mmap failed");
-    exit(1);
-  }
-  memset(arena, 0xAA, 1000);
-
+  ArenaAllocator *arena = new_page_memory(4096);
   arena->base.vtable = &arena_vtable;
   size_t arena_size = (sizeof(ArenaAllocator) + 7) & ~7; // 8-byte alignment
   arena->offset = arena + arena_size;
@@ -252,6 +248,96 @@ void test_arena(Allocator *arena) {
   // memset(str4, 1, 1);
 
   printf("all arena allocator tests passed\n");
+}
+
+typedef struct Allocator Allocator;
+typedef struct GPABucket GPABucket;
+typedef struct GeneralPurposeAllocator GeneralPurposeAllocator;
+
+struct GPABucket {
+  size_t chunk_size;
+  void *start;
+  void *offset;
+  GPABucket *next;
+};
+
+struct GeneralPurposeAllocator {
+  Allocator base;
+  GPABucket *buckets[12];
+};
+
+static void *gpa_alloc(Allocator *self, size_t size) {
+  GeneralPurposeAllocator *gpa = (GeneralPurposeAllocator *)self;
+  if (size == 0)
+    return NULL;
+
+  size = (size + 7) & ~7; // Align size to 8 bytes
+
+  if (size > 4096) {
+    fprintf(stderr, "gpa allocation too large\n");
+    return NULL;
+  }
+
+  int bucket_index = 0;
+  size_t bucket_size = 2; // Start from 2^1 bytes
+  while (bucket_size < size && bucket_index < 12) {
+    bucket_size <<= 1;
+    bucket_index++;
+  }
+
+  if (bucket_index >= 12) {
+    fprintf(stderr, "Allocation size too large for available buckets\n");
+    return NULL;
+  }
+
+  // If bucket doesn't exist, create it
+  if (gpa->buckets[bucket_index] == NULL) {
+    gpa->buckets[bucket_index] = new_page_memory(4096);
+    gpa->buckets[bucket_index]->chunk_size = bucket_size;
+    gpa->buckets[bucket_index]->start =
+        (char *)gpa->buckets[bucket_index] + sizeof(GPABucket);
+    gpa->buckets[bucket_index]->offset = gpa->buckets[bucket_index]->start;
+    gpa->buckets[bucket_index]->next = NULL;
+  }
+
+  GPABucket *bucket = gpa->buckets[bucket_index];
+  bool oom =
+      (char *)bucket->offset + bucket_size > (char *)bucket->start + 4096;
+
+  if (oom) {
+    GPABucket *new_bucket = new_page_memory(4096);
+    new_bucket->chunk_size = bucket_size;
+    new_bucket->start = (char *)new_bucket + sizeof(GPABucket);
+    new_bucket->offset = new_bucket->start;
+    new_bucket->next = bucket;
+    gpa->buckets[bucket_index] = new_bucket;
+    bucket = new_bucket;
+  }
+
+  void *result = bucket->offset;
+  bucket->offset = (char *)bucket->offset + bucket_size;
+  return result;
+}
+
+static void gpa_free(Allocator *self, void *ptr) {
+  (void)self;
+  (void)ptr;
+}
+
+// TODO:
+static bool gpa_resize(Allocator *self, void *ptr, size_t old_size,
+                       size_t new_size) {
+  return true;
+}
+
+AllocatorVTable gpa_vtable = {
+    .alloc = gpa_alloc, .free = gpa_free, .resize = gpa_resize};
+
+Allocator *create_gpa_allocator() {
+  // FIXME: inefficient because it's using the 4kb to store GPA's metadata
+  GeneralPurposeAllocator *gpa = new_page_memory(4096);
+  size_t gpa_size = (sizeof(GeneralPurposeAllocator) + 7) & ~7;
+  return (Allocator *)gpa;
 }
 
 // "Why do I have to pass allocators around in Zig?"
