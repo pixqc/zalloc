@@ -29,19 +29,18 @@ struct Allocator {
 
 typedef struct {
   Allocator base;
-  void *buffer;
   size_t size;
-  size_t offset;
+  void *offset;
 } FixedBufferAllocator;
 
 static void *fixed_buffer_alloc(Allocator *self, size_t size) {
   FixedBufferAllocator *fba = (FixedBufferAllocator *)self;
   size = (size + 7) & ~7; // 8-byte alignment
-  if (fba->offset + size > fba->size)
+  if ((char *)fba->offset + size > (char *)fba + fba->size)
     return NULL;
-  void *ptr = (char *)fba->buffer + fba->offset;
-  fba->offset += size;
-  return ptr;
+  void *result = fba->offset;
+  fba->offset = (char *)fba->offset + size;
+  return result;
 }
 
 static void fixed_buffer_free(Allocator *self, void *ptr) {
@@ -53,11 +52,11 @@ static bool fixed_buffer_resize(Allocator *self, void *ptr, size_t old_size,
                                 size_t new_size) {
   FixedBufferAllocator *fba = (FixedBufferAllocator *)self;
   new_size = (new_size + 7) & ~7; // 8-byte alignment
-  if ((char *)ptr + old_size != (char *)fba->buffer + fba->offset)
+  if ((char *)ptr + old_size != fba->offset)
     return false;
-  if (fba->offset - old_size + new_size > fba->size)
+  if ((char *)fba->offset - old_size + new_size > (char *)fba + fba->size)
     return false;
-  fba->offset = fba->offset - old_size + new_size;
+  fba->offset = (char *)fba->offset - old_size + new_size;
   return true;
 }
 
@@ -68,9 +67,8 @@ AllocatorVTable fixed_buffer_vtable = {.alloc = fixed_buffer_alloc,
 Allocator *create_fixed_buffer_allocator(void *buffer, size_t size) {
   FixedBufferAllocator *fba = (FixedBufferAllocator *)buffer;
   fba->base.vtable = &fixed_buffer_vtable;
-  fba->buffer = (char *)buffer + sizeof(FixedBufferAllocator);
-  fba->size = size - sizeof(FixedBufferAllocator);
-  fba->offset = 0;
+  fba->size = size;
+  fba->offset = (char *)buffer + sizeof(FixedBufferAllocator);
   return (Allocator *)fba;
 }
 
@@ -92,21 +90,19 @@ void test_fba(Allocator *fba) {
 
   bool resize2 = fba->vtable->resize(fba, str2, 16, 5);
   assert(resize2 == true);
-  assert(((FixedBufferAllocator *)fba)->offset ==
-         (size_t)((char *)str2 + 8 -
-                  (char *)((FixedBufferAllocator *)fba)->buffer));
+  assert(((FixedBufferAllocator *)fba)->offset == (void *)((char *)str2 + 8));
 
   char *str3 = (char *)fba->vtable->alloc(fba, 2);
   assert(str3 != NULL);
   assert(str3 == str2 + 8); // should be right after the resized str2
   memcpy(str3, "z\0", 2);
   assert(strlen(str3) == 1);
+  assert((char *)str3 + 8 == (char *)((FixedBufferAllocator *)fba)->offset);
 
-  assert((char *)str3 + 8 == (char *)((FixedBufferAllocator *)fba)->buffer +
-                                 ((FixedBufferAllocator *)fba)->offset);
   printf("all fixed buffer allocator tests passed\n");
 }
 
+// arena is linked list of pages
 typedef struct ArenaAllocator {
   Allocator base;
   void *offset;
