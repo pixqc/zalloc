@@ -109,8 +109,6 @@ void test_fba(Allocator *fba) {
 
 typedef struct ArenaAllocator {
   Allocator base;
-  size_t size; // unnecessary, always 4096 in this case
-  void *start; // TODO: unnecessary
   void *offset;
   struct ArenaAllocator *next;
 } ArenaAllocator;
@@ -127,7 +125,7 @@ static void *arena_alloc(Allocator *self, size_t size) {
   // try to find space in existing pages
   ArenaAllocator *current = arena;
   while (current != NULL) {
-    if (current->offset + size <= current->start + current->size) {
+    if (current->offset + size <= (void *)self + 4096) {
       void *result = current->offset;
       current->offset = (char *)current->offset + size;
       return result;
@@ -145,10 +143,8 @@ static void *arena_alloc(Allocator *self, size_t size) {
 
   memset(new_arena, 0xAA, 4096);
   new_arena->base = arena->base;
-  new_arena->size = 4096;
-  new_arena->start = new_arena;
   size_t arena_size = (sizeof(ArenaAllocator) + 7) & ~7;
-  new_arena->offset = new_arena->start + arena_size;
+  new_arena->offset = (void *)new_arena + arena_size;
   new_arena->next = NULL;
 
   current = arena;
@@ -168,7 +164,7 @@ void arena_free(Allocator *allocator, void *ptr) {
   ArenaAllocator *arena = (ArenaAllocator *)allocator;
   while (arena) {
     ArenaAllocator *next = arena->next;
-    munmap(arena, arena->size);
+    munmap(arena, 4096);
     arena = next;
   }
 }
@@ -180,7 +176,7 @@ static bool arena_resize(Allocator *self, void *ptr, size_t old_size,
 
   // last allocation?
   if ((char *)ptr + old_size == arena->offset) {
-    if ((char *)ptr + new_size <= (char *)arena->start + arena->size) {
+    if ((char *)ptr + new_size <= (char *)arena + 4096) {
       arena->offset = (char *)ptr + new_size;
       return true;
     }
@@ -201,10 +197,8 @@ Allocator *create_arena_allocator() {
   memset(arena, 0xAA, 1000);
 
   arena->base.vtable = &arena_vtable;
-  arena->size = 4096;
-  arena->start = arena;
   size_t arena_size = (sizeof(ArenaAllocator) + 7) & ~7; // 8-byte alignment
-  arena->offset = arena->start + arena_size;
+  arena->offset = arena + arena_size;
   arena->next = NULL;
   return (Allocator *)arena;
 }
@@ -245,11 +239,13 @@ void test_arena(Allocator *arena) {
 
   // str4 should be on next page
   size_t arena_size = (sizeof(ArenaAllocator) + 7) & ~7; // 8-byte alignment
-  assert(str4 == (char *)arena_alloc->next->start + arena_size);
+  assert(str4 == (char *)arena_alloc->next + arena_size);
+  assert(str4 != str3 + 8);
 
   // fill existing available bucket
   char *str5 = (char *)arena->vtable->alloc(arena, 3);
   assert(str5 != NULL);
+  assert(str5 != str4 + 8);
   assert(str5 == str3 + 8);
   memcpy(str5, "55\0", 2);
 
