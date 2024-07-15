@@ -109,8 +109,8 @@ void test_fba(Allocator *fba) {
 
 typedef struct ArenaAllocator {
   Allocator base;
-  size_t size;
-  void *start;
+  size_t size; // unnecessary, always 4096 in this case
+  void *start; // TODO: unnecessary
   void *offset;
   struct ArenaAllocator *next;
 } ArenaAllocator;
@@ -262,13 +262,26 @@ void test_arena(Allocator *arena) {
   printf("all arena allocator tests passed\n");
 }
 
+// "Why do I have to pass allocators around in Zig?"
+// because userland decides which allocation strategy to use
+// and where the data should be placed
+void alloc_hello(Allocator *allocator) {
+  const char *str = "hello world\n";
+  size_t str_size = strlen(str) + 1;
+  char *str1 = (char *)allocator->vtable->alloc(allocator, str_size);
+  memcpy(str1, str, str_size);
+}
+
 int main() {
   char buf[1000];
   memset(buf, 0xAA, 1000);
   Allocator *fba = create_fixed_buffer_allocator(buf, sizeof(buf));
-  test_fba(fba);
+  alloc_hello(fba);
 
   Allocator *arena = (Allocator *)create_arena_allocator();
+  alloc_hello(arena);
+
+  test_fba(fba);
   test_arena(arena);
 
   // TODO: general purpose allocator
