@@ -255,9 +255,8 @@ typedef struct GPABucket GPABucket;
 typedef struct GeneralPurposeAllocator GeneralPurposeAllocator;
 
 struct GPABucket {
-  size_t chunk_size;
-  void *start;
   void *offset;
+  size_t bucket_size;
   GPABucket *next;
 };
 
@@ -266,49 +265,48 @@ struct GeneralPurposeAllocator {
   GPABucket *buckets[12];
 };
 
+static inline int log2_ceil(size_t x) {
+  int result = 0;
+  size_t value = 1;
+  if (x == 0)
+    return 0;
+  while (value < x) {
+    value <<= 1;
+    result++;
+  }
+  return result;
+}
+
 static void *gpa_alloc(Allocator *self, size_t size) {
   GeneralPurposeAllocator *gpa = (GeneralPurposeAllocator *)self;
-  if (size == 0)
-    return NULL;
-
-  size = (size + 7) & ~7; // Align size to 8 bytes
-
-  if (size > 4096) {
-    fprintf(stderr, "gpa allocation too large\n");
-    return NULL;
+  if (size <= 0 || size > 4096) {
+    perror("mmap failed");
+    exit(1);
   }
 
-  int bucket_index = 0;
-  size_t bucket_size = 2; // Start from 2^1 bytes
-  while (bucket_size < size && bucket_index < 12) {
-    bucket_size <<= 1;
-    bucket_index++;
-  }
+  int bucket_index = log2_ceil(size);
+  size_t bucket_size = 1 << bucket_index;
 
   if (bucket_index >= 12) {
-    fprintf(stderr, "Allocation size too large for available buckets\n");
-    return NULL;
+    perror("allocation size too large for available buckets");
+    exit(1);
   }
 
-  // If bucket doesn't exist, create it
+  // if bucket doesn't exist, create it
   if (gpa->buckets[bucket_index] == NULL) {
     gpa->buckets[bucket_index] = new_page_memory(4096);
-    gpa->buckets[bucket_index]->chunk_size = bucket_size;
-    gpa->buckets[bucket_index]->start =
+    gpa->buckets[bucket_index]->bucket_size = bucket_size;
+    gpa->buckets[bucket_index]->offset =
         (char *)gpa->buckets[bucket_index] + sizeof(GPABucket);
-    gpa->buckets[bucket_index]->offset = gpa->buckets[bucket_index]->start;
     gpa->buckets[bucket_index]->next = NULL;
   }
-
   GPABucket *bucket = gpa->buckets[bucket_index];
-  bool oom =
-      (char *)bucket->offset + bucket_size > (char *)bucket->start + 4096;
 
+  bool oom = (char *)bucket->offset + bucket_size > (char *)bucket + 4096;
   if (oom) {
     GPABucket *new_bucket = new_page_memory(4096);
-    new_bucket->chunk_size = bucket_size;
-    new_bucket->start = (char *)new_bucket + sizeof(GPABucket);
-    new_bucket->offset = new_bucket->start;
+    new_bucket->bucket_size = bucket_size;
+    new_bucket->offset = (char *)new_bucket + sizeof(GPABucket);
     new_bucket->next = bucket;
     gpa->buckets[bucket_index] = new_bucket;
     bucket = new_bucket;
@@ -324,9 +322,29 @@ static void gpa_free(Allocator *self, void *ptr) {
   (void)ptr;
 }
 
-// TODO:
 static bool gpa_resize(Allocator *self, void *ptr, size_t old_size,
                        size_t new_size) {
+  GeneralPurposeAllocator *gpa = (GeneralPurposeAllocator *)self;
+  size_t old_aligned_size = (size_t)1 << log2_ceil(old_size);
+  int old_bucket_idx = log2_ceil(old_size);
+  GPABucket *old_bucket = gpa->buckets[old_bucket_idx];
+
+  // last allocation?
+  if ((char *)ptr + old_aligned_size != old_bucket->offset) {
+    return false;
+  }
+
+  // resize can only happen in same bucket
+  // for different-bucket resize, use alloc+free on callsite
+  size_t new_aligned_size = (size_t)1 << log2_ceil(new_size);
+  int new_bucket_idx = log2_ceil(new_size);
+  if (new_bucket_idx > old_bucket_idx) {
+    return false;
+  }
+
+  if (new_size < old_size) {
+    memset((char *)ptr + new_size, 0xAA, old_size - new_size);
+  }
   return true;
 }
 
@@ -336,8 +354,69 @@ AllocatorVTable gpa_vtable = {
 Allocator *create_gpa_allocator() {
   // FIXME: inefficient because it's using the 4kb to store GPA's metadata
   GeneralPurposeAllocator *gpa = new_page_memory(4096);
+  gpa->base.vtable = &gpa_vtable;
   size_t gpa_size = (sizeof(GeneralPurposeAllocator) + 7) & ~7;
+  for (int i = 0; i < 12; i++) {
+    gpa->buckets[i] = NULL;
+  }
   return (Allocator *)gpa;
+}
+
+void test_gpa(Allocator *gpa) {
+  GeneralPurposeAllocator *gpa_alloc = (GeneralPurposeAllocator *)gpa;
+
+  char *str1 = (char *)gpa->vtable->alloc(gpa, 1);
+  assert(str1 != NULL);
+  assert(gpa_alloc->buckets[0] != NULL);
+  assert(gpa_alloc->buckets[0]->bucket_size == 1);
+  *str1 = 'a';
+
+  char *str2 = (char *)gpa->vtable->alloc(gpa, 20);
+  assert(str2 != NULL);
+  assert(gpa_alloc->buckets[5] != NULL);
+  memcpy(str2, "bucket5\n", 8);
+
+  char *str3 = (char *)gpa->vtable->alloc(gpa, 300);
+  assert(str3 != NULL);
+  assert(gpa_alloc->buckets[9] != NULL);
+  assert(gpa_alloc->buckets[9]->bucket_size == 512);
+  memcpy(str3, "bucket9\n", 8);
+
+  // can't resize to different bucket, use alloc+free for that
+  bool resize1 = gpa->vtable->resize(gpa, str1, 1, 2);
+  assert(resize1 == false);
+  bool resize2 = gpa->vtable->resize(gpa, str2, 20, 30);
+  assert(resize2 == true);
+  bool resize2_2 = gpa->vtable->resize(gpa, str2, 30, 1);
+  assert(resize2 == true);
+  assert(str2[0] == 'b');
+  assert(str2[1] == (char)0xAA);
+
+  // // Test allocation that should create a new page in the same bucket
+  // char *str4 = (char *)gpa->vtable->alloc(gpa, 3000);
+  // assert(str4 != NULL);
+  // assert(gpa_alloc->buckets[11] != NULL);
+  // assert(gpa_alloc->buckets[11]->bucket_size == 2048);
+  // assert(gpa_alloc->buckets[11]->next != NULL);
+  //
+  // // Test maximum allocation size
+  // char *str5 = (char *)gpa->vtable->alloc(gpa, 4000);
+  // assert(str5 != NULL);
+  // assert(gpa_alloc->buckets[11] != NULL);
+  // assert(gpa_alloc->buckets[11]->bucket_size == 2048);
+  //
+  // // Attempt to allocate more than the maximum size (should fail)
+  // char *str6 = (char *)gpa->vtable->alloc(gpa, 5000);
+  // assert(str6 == NULL);
+  //
+  // // Free all allocations (note: GPA doesn't actually free memory)
+  // gpa->vtable->free(gpa, str1);
+  // gpa->vtable->free(gpa, str2);
+  // gpa->vtable->free(gpa, str3);
+  // gpa->vtable->free(gpa, str4);
+  // gpa->vtable->free(gpa, str5);
+  //
+  // printf("all gpa allocator tests passed\n");
 }
 
 // "Why do I have to pass allocators around in Zig?"
@@ -359,10 +438,12 @@ int main() {
   Allocator *arena = (Allocator *)create_arena_allocator();
   alloc_hello(arena);
 
+  Allocator *gpa = create_gpa_allocator();
+  alloc_hello(gpa);
+
   test_fba(fba);
   test_arena(arena);
-
-  // TODO: general purpose allocator
+  test_gpa(gpa);
 
   return 0;
 }
