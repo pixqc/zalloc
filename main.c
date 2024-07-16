@@ -93,34 +93,33 @@ Allocator *create_fixed_buffer_allocator(void *buffer, size_t size) {
 
 void test_fba(Allocator *allocator) {
   FixedBufferAllocator *fba = (FixedBufferAllocator *)allocator;
-  MemoryBlock block1 = allocator->vtable->alloc(allocator, 20);
-  char *str1 = (char *)block1.ptr;
-  assert(str1 != NULL);
-  memcpy(str1, "aaaaaaaaaaaaaaaaaaa\0", 20);
-  assert(strlen(str1) == 19);
-  assert(str1[20] == (char)0xAA);
 
-  MemoryBlock block2 = allocator->vtable->alloc(allocator, 11);
-  char *str2 = (char *)block2.ptr;
-  bool resize1 = allocator->vtable->resize(allocator, str1, block1.size, 1);
+  MemoryBlock str1 = allocator->vtable->alloc(allocator, 20);
+  assert(str1.ptr != NULL);
+  memcpy(str1.ptr, "aaaaaaaaaaaaaaaaaaa\0", 20);
+  assert(strlen(str1.ptr) == 19);
+  assert(((char *)str1.ptr)[20] == (char)0xAA);
+
+  MemoryBlock str2 = allocator->vtable->alloc(allocator, 11);
+  bool resize1 = allocator->vtable->resize(allocator, str1.ptr, str1.size, 1);
   assert(resize1 == false); // only last allocation can resize
-  assert(str2 != NULL);
-  assert(str2 == str1 + 24); // 8byte alignment
-  memcpy(str2, "xxxxxxxxxx\0", 11);
-  assert(strlen(str2) == 10);
-  assert(str2[11] == (char)0xAA);
+  assert(str2.ptr != NULL);
+  assert(str2.ptr == (char *)str1.ptr + 24); // 8byte alignment
+  memcpy(str2.ptr, "xxxxxxxxxx\0", 11);
+  assert(strlen(str2.ptr) == 10);
+  assert(((char *)str2.ptr)[11] == (char)0xAA);
 
-  bool resize2 = allocator->vtable->resize(allocator, str2, block2.size, 5);
+  bool resize2 = allocator->vtable->resize(allocator, str2.ptr, str2.size, 5);
   assert(resize2 == true);
-  assert(fba->offset == (void *)((char *)str2 + 8));
+  assert(fba->offset == (void *)((char *)str2.ptr + 8));
 
-  MemoryBlock block3 = allocator->vtable->alloc(allocator, 2);
-  char *str3 = (char *)block3.ptr;
-  assert(str3 != NULL);
-  assert(str3 == str2 + 8); // should be right after the resized str2
-  memcpy(str3, "z\0", 2);
-  assert(strlen(str3) == 1);
-  assert((char *)str3 + 8 == (char *)fba->offset);
+  MemoryBlock str3 = allocator->vtable->alloc(allocator, 2);
+  assert(str3.ptr != NULL);
+  assert(str3.ptr ==
+         (char *)str2.ptr + 8); // should be right after the resized str2
+  memcpy(str3.ptr, "z\0", 2);
+  assert(strlen(str3.ptr) == 1);
+  assert((char *)str3.ptr + 8 == (char *)fba->offset);
 
   printf("all fixed buffer allocator tests passed\n");
 }
@@ -211,61 +210,56 @@ Allocator *create_arena_allocator() {
 void test_arena(Allocator *allocator) {
   ArenaAllocator *arena = (ArenaAllocator *)allocator;
 
-  MemoryBlock block1 = allocator->vtable->alloc(allocator, 20);
-  char *str1 = (char *)block1.ptr;
-  assert(str1 != NULL);
-  memcpy(str1, "aaaaaaaaaaaaaaaaaaa\0", 20);
-  assert(strlen(str1) == 19);
-  assert(str1[24] == (char)0xAA);
+  MemoryBlock str1 = allocator->vtable->alloc(allocator, 20);
+  assert(str1.ptr != NULL);
+  memcpy(str1.ptr, "aaaaaaaaaaaaaaaaaaa\0", 20);
+  assert(strlen(str1.ptr) == 19);
+  assert(((char *)str1.ptr)[24] == (char)0xAA);
 
-  MemoryBlock block2 = allocator->vtable->alloc(allocator, 11);
-  char *str2 = (char *)block2.ptr;
-  bool resize1 = allocator->vtable->resize(allocator, str1, block1.size, 1);
+  MemoryBlock str2 = allocator->vtable->alloc(allocator, 11);
+  bool resize1 = allocator->vtable->resize(allocator, str1.ptr, str1.size, 1);
   assert(resize1 == false);
-  assert(str2 != NULL);
-  assert(str2 == str1 + 24); // 8-byte alignment
-  memcpy(str2, "xxxxxxxxxx\0", 11);
-  assert(strlen(str2) == 10);
+  assert(str2.ptr != NULL);
+  assert(str2.ptr == (char *)str1.ptr + 24); // 8-byte alignment
+  memcpy(str2.ptr, "xxxxxxxxxx\0", 11);
+  assert(strlen(str2.ptr) == 10);
 
-  bool resize2 = allocator->vtable->resize(allocator, str2, block2.size, 5);
+  bool resize2 = allocator->vtable->resize(allocator, str2.ptr, str2.size, 5);
   assert(resize2 == true);
-  assert(arena->offset == str2 + 8);
+  assert(arena->offset == (char *)str2.ptr + 8);
 
-  MemoryBlock block3 = allocator->vtable->alloc(allocator, 2);
-  char *str3 = (char *)block3.ptr;
-  assert(str3 != NULL);
-  assert(str3 == str2 + 8); // 8-byte alignment
-  memcpy(str3, "z\0", 2);
-  assert(strlen(str3) == 1);
+  MemoryBlock str3 = allocator->vtable->alloc(allocator, 2);
+  assert(str3.ptr != NULL);
+  assert(str3.ptr == (char *)str2.ptr + 8); // 8-byte alignment
+  memcpy(str3.ptr, "z\0", 2);
+  assert(strlen(str3.ptr) == 1);
 
   // does it allocate new page
   assert(arena->next == NULL);
 
-  MemoryBlock block4 = allocator->vtable->alloc(allocator, 4040);
-  char *str4 = (char *)block4.ptr;
+  MemoryBlock str4 = allocator->vtable->alloc(allocator, 4040);
   assert(arena->next != NULL);
-  assert(str4 != NULL);
-  memcpy(str4, "bbb\0", 4);
+  assert(str4.ptr != NULL);
+  memcpy(str4.ptr, "bbb\0", 4);
 
   // str4 should be on next page
   size_t arena_size = (sizeof(ArenaAllocator) + 7) & ~7; // 8-byte alignment
-  assert(str4 == (char *)arena->next + arena_size);
-  assert(str4 != str3 + 8);
+  assert(str4.ptr == (char *)arena->next + arena_size);
+  assert(str4.ptr != (char *)str3.ptr + 8);
 
   // fill existing available bucket
-  MemoryBlock block5 = allocator->vtable->alloc(allocator, 3);
-  char *str5 = (char *)block5.ptr;
-  assert(str5 != NULL);
-  assert(str5 != str4 + 8);
-  assert(str5 == str3 + 8);
-  memcpy(str5, "55\0", 2);
+  MemoryBlock str5 = allocator->vtable->alloc(allocator, 3);
+  assert(str5.ptr != NULL);
+  assert(str5.ptr != (char *)str4.ptr + 8);
+  assert(str5.ptr == (char *)str3.ptr + 8);
+  memcpy(str5.ptr, "55\0", 2);
 
   // free page
   allocator->vtable->free(allocator, NULL, 0);
 
   // uncomment to check whether mem has been destroyed
-  // memset(str1, 1, 1);
-  // memset(str4, 1, 1);
+  // memset(str1.ptr, 1, 1);
+  // memset(str4.ptr, 1, 1);
 
   printf("all arena allocator tests passed\n");
 }
@@ -378,50 +372,47 @@ Allocator *create_gpa_allocator() {
 void test_gpa(Allocator *allocator) {
   GeneralPurposeAllocator *gpa = (GeneralPurposeAllocator *)allocator;
 
-  MemoryBlock block1 = allocator->vtable->alloc(allocator, 1);
-  char *str1 = (char *)block1.ptr;
-  assert(str1 != NULL);
+  MemoryBlock str1 = allocator->vtable->alloc(allocator, 1);
+  assert(str1.ptr != NULL);
   assert(gpa->buckets[0] != NULL);
   assert(gpa->buckets[0]->bucket_size == 1);
-  *str1 = 'a';
+  *(char *)str1.ptr = 'a';
 
-  MemoryBlock block2 = allocator->vtable->alloc(allocator, 20);
-  char *str2 = (char *)block2.ptr;
-  assert(str2 != NULL);
+  MemoryBlock str2 = allocator->vtable->alloc(allocator, 20);
+  assert(str2.ptr != NULL);
   assert(gpa->buckets[5] != NULL);
-  memcpy(str2, "bucket5\n", 8);
+  memcpy(str2.ptr, "bucket5\n", 8);
 
-  MemoryBlock block3 = allocator->vtable->alloc(allocator, 300);
-  char *str3 = (char *)block3.ptr;
-  assert(str3 != NULL);
+  MemoryBlock str3 = allocator->vtable->alloc(allocator, 300);
+  assert(str3.ptr != NULL);
   assert(gpa->buckets[9] != NULL);
   assert(gpa->buckets[9]->bucket_size == 512);
-  memcpy(str3, "bucket9\n", 8);
+  memcpy(str3.ptr, "bucket9\n", 8);
 
   // can't resize to different bucket, use alloc+free for that
-  bool resize1 = allocator->vtable->resize(allocator, str1, block1.size, 2);
+  bool resize1 = allocator->vtable->resize(allocator, str1.ptr, str1.size, 2);
   assert(resize1 == false);
 
-  bool resize2 = allocator->vtable->resize(allocator, str2, block2.size, 30);
+  bool resize2 = allocator->vtable->resize(allocator, str2.ptr, str2.size, 30);
   assert(resize2 == true);
 
-  bool resize2_2 = allocator->vtable->resize(allocator, str2, 30, 1);
+  bool resize2_2 = allocator->vtable->resize(allocator, str2.ptr, 30, 1);
   assert(resize2_2 == true);
-  assert(str2[0] == 'b');
-  assert(str2[1] == (char)0xAA);
+  assert(((char *)str2.ptr)[0] == 'b');
+  assert(((char *)str2.ptr)[1] == (char)0xAA);
 
-  MemoryBlock block4;
+  MemoryBlock str4;
   GPABucket *initial_bucket = gpa->buckets[9];
   assert(gpa->buckets[9]->prev == NULL);
 
   // does overflowing create new page
   for (int i = 0; i < 8; i++) {
-    block4 = allocator->vtable->alloc(allocator, 300);
+    str4 = allocator->vtable->alloc(allocator, 300);
   }
   assert(gpa->buckets[9] != initial_bucket);
   assert(gpa->buckets[9]->prev == initial_bucket);
 
-  allocator->vtable->free(allocator, str1, block1.size);
+  allocator->vtable->free(allocator, str1.ptr, str1.size);
   printf("all gpa allocator tests passed\n");
 }
 
