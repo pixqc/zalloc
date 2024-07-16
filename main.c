@@ -335,12 +335,29 @@ static MemoryBlock gpa_alloc(Allocator *self, size_t size) {
 
 static void gpa_free(Allocator *self, MemoryBlock memory) {
   memset(memory.ptr, 0xAA, memory.size);
-  // TODO: if ptr until ptr + 4096 == 0xAA, free current page with munmap
-  // GeneralPurposeAllocator *gpa = (GeneralPurposeAllocator *)self;
-  // int idx = log2_ceil(size);
-  // GPABucket *bucket = gpa->buckets[idx];
-  // if plus offset until end of thing is 0xaa, then it's a free space
-  // and i should free the page
+
+  GeneralPurposeAllocator *gpa = (GeneralPurposeAllocator *)self;
+  int idx = log2_ceil(memory.size);
+  GPABucket **bucket_ptr = &(gpa->buckets[idx]);
+  GPABucket *bucket = gpa->buckets[idx];
+
+  char *curr = (char *)bucket + sizeof(GPABucket);
+  char *end = (char *)bucket + 4096;
+  bool page_empty = true;
+
+  while (curr < end) {
+    if (*curr != (char)0xAA) {
+      page_empty = false;
+      break;
+    }
+    curr++;
+  }
+
+  if (page_empty) {
+    GPABucket *tmp = bucket->prev;
+    munmap(bucket, 4096);
+    *bucket_ptr = tmp;
+  }
 }
 
 static bool gpa_resize(Allocator *self, MemoryBlock memory, size_t new_size) {
@@ -362,6 +379,7 @@ static bool gpa_resize(Allocator *self, MemoryBlock memory, size_t new_size) {
     return false;
   }
 
+  // clunky
   if (new_size < memory.size) {
     memset((char *)memory.ptr + new_size, 0xAA, memory.size - new_size);
   }
@@ -430,6 +448,7 @@ void test_gpa(Allocator *allocator) {
   MemoryBlock str5 = allocator->vtable->alloc(allocator, 1);
   *(char *)str5.ptr = 'b';
   allocator->vtable->free(allocator, str1);
+  allocator->vtable->free(allocator, str5);
 
   printf("all gpa allocator tests passed\n");
 }
