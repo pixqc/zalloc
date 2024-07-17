@@ -70,7 +70,7 @@ static bool fixed_buffer_resize(Allocator *self, MemoryBlock memory,
                                 size_t new_size) {
   FixedBufferAllocator *fba = (FixedBufferAllocator *)self;
   new_size = (new_size + 7) & ~7; // 8-byte alignment
-  //
+
   // last allocation?
   if ((char *)memory.ptr + memory.size != fba->offset)
     return false;
@@ -267,7 +267,7 @@ void test_arena(Allocator *allocator) {
   // free page
   allocator->vtable->free(allocator, (MemoryBlock){NULL, 0});
 
-  // uncomment to check whether mem has been destroyed
+  // uncomment to check whether mem has been munmap'd
   // memset(str1.ptr, 1, 1);
   // memset(str4.ptr, 1, 1);
 
@@ -303,16 +303,16 @@ static inline int log2_ceil(size_t x) {
 
 static MemoryBlock gpa_alloc(Allocator *self, size_t size) {
   struct GeneralPurposeAllocator *gpa = (struct GeneralPurposeAllocator *)self;
-  if (size <= 0 || size > 4096) {
-    perror("Invalid allocation size");
+  if (size <= 0) {
+    perror("invalid allocation size");
     exit(1);
   }
 
   int bucket_index = log2_ceil(size);
   size_t bucket_size = 1 << bucket_index;
   if (bucket_index >= 12) {
-    perror("Allocation size too large for available buckets");
-    exit(1);
+    void *page = new_page_memory(size);
+    return (MemoryBlock){page, size};
   }
 
   // if bucket doesn't exist or it ooms
@@ -338,6 +338,12 @@ static void gpa_free(Allocator *self, MemoryBlock memory) {
 
   GeneralPurposeAllocator *gpa = (GeneralPurposeAllocator *)self;
   int idx = log2_ceil(memory.size);
+  if (idx >= 12) {
+    // free large allocations directly
+    munmap(memory.ptr, memory.size);
+    return;
+  }
+
   GPABucket **bucket_ptr = &(gpa->buckets[idx]);
   GPABucket *bucket = gpa->buckets[idx];
 
@@ -364,6 +370,12 @@ static bool gpa_resize(Allocator *self, MemoryBlock memory, size_t new_size) {
   GeneralPurposeAllocator *gpa = (GeneralPurposeAllocator *)self;
   size_t old_aligned_size = (size_t)1 << log2_ceil(memory.size);
   int old_bucket_idx = log2_ceil(memory.size);
+  if (old_bucket_idx >= 12) {
+    // don't resize, alloc+free on callsite
+    perror("attempting to resize large allocation");
+    exit(1);
+  }
+
   GPABucket *old_bucket = gpa->buckets[old_bucket_idx];
 
   // last allocation?
@@ -449,6 +461,18 @@ void test_gpa(Allocator *allocator) {
   *(char *)str5.ptr = 'b';
   allocator->vtable->free(allocator, str1);
   allocator->vtable->free(allocator, str5);
+
+  // large allocations
+  MemoryBlock str6 = allocator->vtable->alloc(allocator, 4096);
+  // loop through the buckets and make sure str6 isn't one of the bucket
+  assert(str6.ptr != NULL);
+  assert(str6.size == 4096);
+  allocator->vtable->free(allocator, str6);
+
+  // uncomment to check whether mem has been munmap'd
+  // memset(str1.ptr, 1, 1);
+  // memset(str5.ptr, 1, 1);
+  // memset(str6.ptr, 1, 1);
 
   printf("all gpa allocator tests passed\n");
 }
