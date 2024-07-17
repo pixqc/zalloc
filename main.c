@@ -311,6 +311,7 @@ static MemoryBlock gpa_alloc(Allocator *self, size_t size) {
   int bucket_index = log2_ceil(size);
   size_t bucket_size = 1 << bucket_index;
   if (bucket_index >= 12) {
+    // mmap does alignment internally
     void *page = new_page_memory(size);
     return (MemoryBlock){page, size};
   }
@@ -403,11 +404,8 @@ AllocatorVTable gpa_vtable = {
 
 Allocator *create_gpa_allocator() {
   // FIXME: inefficient because it's using the 4kb to store GPA's metadata
-  // TODO: handle big allocations
   GeneralPurposeAllocator *gpa = new_page_memory(4096);
   gpa->base.vtable = &gpa_vtable;
-  size_t gpa_size = (sizeof(GeneralPurposeAllocator) + 7) & ~7;
-  // gpa_size not used?
   for (int i = 0; i < 12; i++) {
     gpa->buckets[i] = NULL;
   }
@@ -464,7 +462,6 @@ void test_gpa(Allocator *allocator) {
 
   // large allocations
   MemoryBlock str6 = allocator->vtable->alloc(allocator, 4096);
-  // loop through the buckets and make sure str6 isn't one of the bucket
   assert(str6.ptr != NULL);
   assert(str6.size == 4096);
   allocator->vtable->free(allocator, str6);
