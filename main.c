@@ -36,7 +36,7 @@ typedef struct Allocator Allocator;
 typedef struct AllocatorVTable {
   MemoryBlock (*alloc)(Allocator *self, size_t size);
   void (*free)(Allocator *self, MemoryBlock memory);
-  bool (*resize)(Allocator *self, MemoryBlock, size_t new_size);
+  bool (*resize)(Allocator *self, MemoryBlock *memory, size_t new_size);
 } AllocatorVTable;
 
 struct Allocator {
@@ -66,21 +66,21 @@ static void fixed_buffer_free(Allocator *self, MemoryBlock memory) {
   (void)memory;
 }
 
-static bool fixed_buffer_resize(Allocator *self, MemoryBlock memory,
+static bool fixed_buffer_resize(Allocator *self, MemoryBlock *memory,
                                 size_t new_size) {
   FixedBufferAllocator *fba = (FixedBufferAllocator *)self;
   new_size = (new_size + 7) & ~7; // 8-byte alignment
 
   // last allocation?
-  if ((char *)memory.ptr + memory.size != fba->offset)
+  if ((char *)memory->ptr + memory->size != fba->offset)
     return false;
 
   // oom?
-  if ((char *)fba->offset - memory.size + new_size > (char *)fba + fba->size)
+  if ((char *)fba->offset - memory->size + new_size > (char *)fba + fba->size)
     return false;
 
-  fba->offset = (char *)fba->offset - memory.size + new_size;
-  memory.size = new_size;
+  fba->offset = (char *)fba->offset - memory->size + new_size;
+  memory->size = new_size;
   return true;
 }
 
@@ -107,7 +107,7 @@ void test_fba(Allocator *allocator) {
   assert(((char *)str1.ptr)[20] == (char)0xAA);
 
   MemoryBlock str2 = allocator->vtable->alloc(allocator, 11);
-  bool resize1 = allocator->vtable->resize(allocator, str1, 1);
+  bool resize1 = allocator->vtable->resize(allocator, &str1, 1);
   assert(resize1 == false); // only last allocation can resize
   assert(str2.ptr != NULL);
   assert(str2.size == 16);
@@ -116,10 +116,10 @@ void test_fba(Allocator *allocator) {
   assert(strlen(str2.ptr) == 10);
   assert(((char *)str2.ptr)[11] == (char)0xAA);
 
-  bool resize2 = allocator->vtable->resize(allocator, str2, 5);
+  bool resize2 = allocator->vtable->resize(allocator, &str2, 5);
   assert(resize2 == true);
-  assert(str2.size = 8);
-  assert(fba->offset == (void *)((char *)str2.ptr + 8));
+  assert(str2.size == 8);
+  assert(fba->offset == (void *)((char *)str2.ptr + str2.size));
 
   MemoryBlock str3 = allocator->vtable->alloc(allocator, 2);
   assert(str3.ptr != NULL);
@@ -177,7 +177,6 @@ static MemoryBlock arena_alloc(Allocator *self, size_t size) {
   return (MemoryBlock){ptr, size};
 }
 
-// technically "destroy"
 void arena_free(Allocator *allocator, MemoryBlock memory) {
   (void)memory;
   ArenaAllocator *arena = (ArenaAllocator *)allocator;
@@ -188,17 +187,18 @@ void arena_free(Allocator *allocator, MemoryBlock memory) {
   }
 }
 
-static bool arena_resize(Allocator *self, MemoryBlock memory, size_t new_size) {
+static bool arena_resize(Allocator *self, MemoryBlock *memory,
+                         size_t new_size) {
   ArenaAllocator *arena = (ArenaAllocator *)self;
   new_size = (new_size + 7) & ~7; // 8-byte alignment
 
-  bool last_alloc = (char *)memory.ptr + memory.size == arena->offset;
-  bool oom = (char *)memory.ptr + new_size > (char *)arena + 4096;
+  bool last_alloc = (char *)memory->ptr + memory->size == arena->offset;
+  bool oom = (char *)memory->ptr + new_size > (char *)arena + 4096;
   if (!last_alloc || oom)
     return false;
 
-  arena->offset = (char *)memory.ptr + new_size;
-  memory.size = new_size;
+  arena->offset = (char *)memory->ptr + new_size;
+  memory->size = new_size;
   return true;
 }
 
@@ -225,7 +225,7 @@ void test_arena(Allocator *allocator) {
   assert(((char *)str1.ptr)[24] == (char)0xAA);
 
   MemoryBlock str2 = allocator->vtable->alloc(allocator, 11);
-  bool resize1 = allocator->vtable->resize(allocator, str1, 1);
+  bool resize1 = allocator->vtable->resize(allocator, &str1, 1);
   assert(resize1 == false);
   assert(str2.ptr != NULL);
   assert(str2.size == 16);
@@ -233,9 +233,9 @@ void test_arena(Allocator *allocator) {
   memcpy(str2.ptr, "xxxxxxxxxx\0", 11);
   assert(strlen(str2.ptr) == 10);
 
-  bool resize2 = allocator->vtable->resize(allocator, str2, 5);
+  bool resize2 = allocator->vtable->resize(allocator, &str2, 5);
   assert(resize2 == true);
-  assert(arena->offset == (char *)str2.ptr + 8);
+  assert(arena->offset == (char *)str2.ptr + str2.size);
 
   MemoryBlock str3 = allocator->vtable->alloc(allocator, 2);
   assert(str3.ptr != NULL);
@@ -274,7 +274,6 @@ void test_arena(Allocator *allocator) {
   printf("all arena allocator tests passed\n");
 }
 
-typedef struct Allocator Allocator;
 typedef struct GPABucket GPABucket;
 typedef struct GeneralPurposeAllocator GeneralPurposeAllocator;
 
@@ -345,7 +344,7 @@ static void gpa_free(Allocator *self, MemoryBlock memory) {
     return;
   }
 
-  GPABucket **bucket_ptr = &(gpa->buckets[idx]);
+  GPABucket **bucket_ptr = &gpa->buckets[idx];
   GPABucket *bucket = gpa->buckets[idx];
 
   char *curr = (char *)bucket + sizeof(GPABucket);
@@ -367,10 +366,10 @@ static void gpa_free(Allocator *self, MemoryBlock memory) {
   }
 }
 
-static bool gpa_resize(Allocator *self, MemoryBlock memory, size_t new_size) {
+static bool gpa_resize(Allocator *self, MemoryBlock *memory, size_t new_size) {
   GeneralPurposeAllocator *gpa = (GeneralPurposeAllocator *)self;
-  size_t old_aligned_size = (size_t)1 << log2_ceil(memory.size);
-  int old_bucket_idx = log2_ceil(memory.size);
+  size_t old_aligned_size = (size_t)1 << log2_ceil(memory->size);
+  int old_bucket_idx = log2_ceil(memory->size);
   if (old_bucket_idx >= 12) {
     // don't resize, alloc+free on callsite
     perror("attempting to resize large allocation");
@@ -380,7 +379,7 @@ static bool gpa_resize(Allocator *self, MemoryBlock memory, size_t new_size) {
   GPABucket *old_bucket = gpa->buckets[old_bucket_idx];
 
   // last allocation?
-  if ((char *)memory.ptr + old_aligned_size != old_bucket->offset) {
+  if ((char *)memory->ptr + old_aligned_size != old_bucket->offset) {
     return false;
   }
 
@@ -392,9 +391,8 @@ static bool gpa_resize(Allocator *self, MemoryBlock memory, size_t new_size) {
     return false;
   }
 
-  // clunky
-  if (new_size < memory.size) {
-    memset((char *)memory.ptr + new_size, 0xAA, memory.size - new_size);
+  if (new_size < memory->size) {
+    memset((char *)memory->ptr + new_size, 0xAA, memory->size - new_size);
   }
   return true;
 }
@@ -432,14 +430,12 @@ void test_gpa(Allocator *allocator) {
   assert(gpa->buckets[9]->bucket_size == 512);
   memcpy(str3.ptr, "bucket9\n", 8);
 
-  // can't resize to different bucket, use alloc+free for that
-  bool resize1 = allocator->vtable->resize(allocator, str1, 2);
+  // can't resize to different bucket, use alloc+free instead
+  bool resize1 = allocator->vtable->resize(allocator, &str1, 2);
   assert(resize1 == false);
-
-  bool resize2 = allocator->vtable->resize(allocator, str2, 30);
+  bool resize2 = allocator->vtable->resize(allocator, &str2, 30);
   assert(resize2 == true);
-
-  bool resize2_2 = allocator->vtable->resize(allocator, str2, 1);
+  bool resize2_2 = allocator->vtable->resize(allocator, &str2, 1);
   assert(resize2_2 == true);
   assert(((char *)str2.ptr)[0] == 'b');
   assert(((char *)str2.ptr)[1] == (char)0xAA);
