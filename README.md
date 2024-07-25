@@ -1,6 +1,6 @@
 **zalloc**: zig allocators implemented in c
 
-for educational purposes only
+for educational purposes only, related blog post: https://pixqc.com/zigalloc
 
 example usage:
 
