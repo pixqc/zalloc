@@ -1,5 +1,7 @@
 **zalloc**: zig allocators implemented in c
 
+for educational purposes only
+
 example usage:
 
 ```c
@@ -28,5 +30,3 @@ int main() {
   return 0;
 }
 ```
-
-for educational purposes only
